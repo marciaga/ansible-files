@@ -1,0 +1,64 @@
+---
+- hosts: aws
+  remote_user: ubuntu
+  become: yes
+  gather_facts: yes
+  connection: ssh
+  vars_files:
+    - files/secrets.yml
+
+  tasks:
+  - name: Install packages
+    apt: name="{{ item }}" update_cache=yes state=latest
+    with_items:
+      - build-essential
+      - npm
+      - nodejs-legacy
+      - git
+      - nginx
+      - curl
+
+  - name: Install pm2
+    npm: name=pm2 global=yes production=yes
+
+  - name: Create App directory
+    file: path={{ home_directory }}/{{ app_directory }} state=directory
+
+  - name: Copy ssh key
+    copy: src="{{ private_key }}" dest="{{ home_directory }}" mode=0600
+
+  - name: Git clone repo
+    git: repo=git@github.com:{{ github_username }}/{{ git_repo }}.git dest={{ home_directory }}/{{ app_directory}} update=yes force=yes accept_hostkey=yes key_file="{{ home_directory }}/id_rsa"
+    register: git_finished
+
+  - name: Install n
+    npm: name=n global=yes
+
+  - name: Change Node version
+    command: n 4.4.7
+
+  - name: Install node modules
+    npm: path={{ home_directory }}/{{ app_directory }} production=yes
+    register: npm_finished
+
+  - name: Build JS and CSS dependencies
+    command: "{{ item }}"
+    args:
+      chdir: "{{ home_directory }}/{{ app_directory }}"
+    become: yes
+    with_items:
+      - npm run build
+
+  - name: Stop pm2
+    become: "{{ sudo_user }}"
+    command: pm2 stop app chdir={{ home_directory }}/{{ app_directory }}
+    ignore_errors: yes
+
+  - name: Start pm2
+    environment:
+      NODE_ENV: "{{ server_environment }}"
+    become: "{{ sudo_user }}"
+    command: pm2 start index.js --name app -- --{{ server_environment }}
+    args:
+      chdir: "{{ home_directory }}/{{ app_directory }}"
+    ignore_errors: yes
